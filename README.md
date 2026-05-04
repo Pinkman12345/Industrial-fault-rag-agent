@@ -22,7 +22,3 @@
 - Chroma
 - OpenAI-compatible API
 - Markdown / CSV / JSON
-
-## 项目定位
-
-该项目不是企业级工业运维平台，而是一个用于展示 AI 应用开发、RAG、Agent 工具调用和工业故障诊断场景结合能力的可运行 Demo。
