@@ -307,7 +307,9 @@ def run_fault_diagnosis_agent(question: str, use_trend_analysis: bool = True) ->
         question=question,
         rag_answer=rag_text,
         rule_check_result=rule_check_result,
-        trend_result=trend_result
+        trend_result=trend_result,
+        sensor_states=sensor_states,
+        extraction_result=extraction_result
     )
 
     final_result = {
