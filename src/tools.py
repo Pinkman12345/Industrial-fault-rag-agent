@@ -79,11 +79,13 @@ SENSOR_KNOWLEDGE = {
 def sensor_explain_tool(sensor_name: str) -> Dict[str, Any]:
     """
     根据传感器变量名，返回变量含义、所属系统、关联变量和可能故障。
+    -> Dict[str, Any]表示：返回一个字典，这个字典的 key 是字符串，value 可以是任意类型。
 
     示例：
     sensor_explain_tool("TJSD")
     """
 
+    # 把用户输入的传感器名清洗一下，去掉前后空格，并统一转成大写
     sensor_name = sensor_name.strip().upper()
 
     if sensor_name not in SENSOR_KNOWLEDGE:
@@ -109,13 +111,23 @@ def sensor_explain_tool(sensor_name: str) -> Dict[str, Any]:
 
 # =========================
 # 3. 工具二：异常规则判断工具
+# 前面的 sensor_explain_tool 本质还是：查字典
+# 这一段已经开始真正体现：“Agent + Rule-based reasoning（规则推理）”了。
 # =========================
 
 def anomaly_rule_check_tool(sensor_states: Dict[str, str]) -> Dict[str, Any]:
     """
+    输入：
+    传感器状态组合
+
+    输出：
+    命中的异常模式
+    可能故障
+    原因解释
+    
     根据若干传感器状态，基于简单规则判断异常模式。
 
-    输入示例：
+    输入示例（key传感器变量名；value状态描述）：
     {
         "TJSD": "下降",
         "DP_ZJ": "升高",
@@ -134,6 +146,7 @@ def anomaly_rule_check_tool(sensor_states: Dict[str, str]) -> Dict[str, Any]:
         for key, value in sensor_states.items()
     }
 
+    # 创建空列表，保存命中规则的结果
     matched_rules: List[Dict[str, Any]] = []
 
     # 规则 1：推进速度下降 + 刀盘转矩升高
@@ -288,10 +301,13 @@ def fault_report_tool(
     rag_answer: str,
     rule_check_result: Optional[Dict[str, Any]] = None,
     trend_result: Optional[Dict[str, Any]] = None,
+    sensor_states: Optional[Dict[str, str]] = None,
+    extraction_result: Optional[Dict[str, Any]] = None,
     output_filename: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    根据 RAG 回答、规则判断结果、趋势分析结果，生成 Markdown 故障诊断报告。
+    根据 RAG 回答、状态抽取结果、规则判断结果、趋势分析结果，
+    生成 Markdown 故障诊断报告。
 
     输出位置：
     outputs/report_xxx.md
@@ -313,13 +329,75 @@ def fault_report_tool(
     report_lines.append(f"- 用户问题：{question}")
     report_lines.append("")
 
-    report_lines.append("## 一、RAG 诊断回答")
+    # =========================
+    # 一、传感器状态抽取结果
+    # =========================
+
+    report_lines.append("## 一、传感器状态抽取结果")
+    report_lines.append("")
+
+    sensor_states = sensor_states or {}
+    extraction_result = extraction_result or {}
+
+    method = extraction_result.get("method", "unknown")
+
+    if method == "llm_json_extraction":
+        method_text = "LLM JSON 语义抽取"
+    elif method == "rule_based_fallback":
+        method_text = "关键词规则回退"
+    else:
+        method_text = method
+
+    report_lines.append(f"- 抽取方式：{method_text}")
+    report_lines.append("")
+
+    if sensor_states:
+        report_lines.append("| 传感器变量 | 状态 |")
+        report_lines.append("|---|---|")
+
+        for sensor, state in sensor_states.items():
+            report_lines.append(f"| {sensor} | {state} |")
+
+        report_lines.append("")
+    else:
+        report_lines.append("未从用户问题中抽取到明确的传感器状态。")
+        report_lines.append("")
+
+    phenomena = extraction_result.get("phenomena", [])
+    if phenomena:
+        report_lines.append("### 抽取到的现象描述")
+        report_lines.append("")
+
+        for item in phenomena:
+            report_lines.append(f"- {item}")
+
+        report_lines.append("")
+
+    uncertain_items = extraction_result.get("uncertain_items", [])
+    if uncertain_items:
+        report_lines.append("### 不确定项")
+        report_lines.append("")
+
+        for item in uncertain_items:
+            report_lines.append(f"- {item}")
+
+        report_lines.append("")
+
+    # =========================
+    # 二、RAG 诊断回答
+    # =========================
+
+    report_lines.append("## 二、RAG 诊断回答")
     report_lines.append("")
     report_lines.append(rag_answer.strip())
     report_lines.append("")
 
+    # =========================
+    # 三、规则工具判断结果
+    # =========================
+
     if rule_check_result is not None:
-        report_lines.append("## 二、规则工具判断结果")
+        report_lines.append("## 三、规则工具判断结果")
         report_lines.append("")
         report_lines.append(f"- 是否命中异常模式：{rule_check_result.get('has_anomaly_pattern')}")
         report_lines.append(f"- 判断摘要：{rule_check_result.get('summary')}")
@@ -329,6 +407,7 @@ def fault_report_tool(
         if matched_rules:
             report_lines.append("### 命中规则")
             report_lines.append("")
+
             for rule in matched_rules:
                 report_lines.append(f"#### {rule.get('rule_id')} {rule.get('rule_name')}")
                 report_lines.append("")
@@ -337,8 +416,12 @@ def fault_report_tool(
                 report_lines.append(f"- 关联故障：{', '.join(rule.get('related_faults', []))}")
                 report_lines.append("")
 
+    # =========================
+    # 四、趋势分析结果
+    # =========================
+
     if trend_result is not None:
-        report_lines.append("## 三、趋势分析结果")
+        report_lines.append("## 四、趋势分析结果")
         report_lines.append("")
         report_lines.append(f"- 数据文件：{trend_result.get('csv_path')}")
         report_lines.append(f"- 数据行数：{trend_result.get('row_count')}")
@@ -361,15 +444,22 @@ def fault_report_tool(
         if pattern_hints:
             report_lines.append("### 趋势辅助判断")
             report_lines.append("")
+
             for hint in pattern_hints:
                 report_lines.append(f"- {hint}")
+
             report_lines.append("")
 
-    report_lines.append("## 四、报告说明")
+    # =========================
+    # 五、报告说明
+    # =========================
+
+    report_lines.append("## 五、报告说明")
     report_lines.append("")
     report_lines.append(
-        "本报告由 RAG 检索结果、大模型结构化回答、规则判断工具和可选趋势分析工具共同生成。"
-        "当前结果用于故障辅助分析与 Demo 展示，不应替代现场工程诊断结论。"
+        "本报告由 LLM JSON 状态抽取、RAG 检索结果、大模型结构化回答、"
+        "规则判断工具和可选趋势分析工具共同生成。"
+        "当前结果用于故障辅助分析与 Demo 展示，不应替代真实工程现场诊断结论。"
     )
     report_lines.append("")
 
@@ -426,11 +516,48 @@ if __name__ == "__main__":
 可能与掌子面阻力增大、刀具磨损、排浆不畅或仓压异常有关。
 """
 
+    # 模拟 LLM JSON 状态抽取结果
+    mock_extraction_result = {
+        "success": True,
+        "method": "llm_json_extraction",
+        "sensor_states": {
+            "TJSD": "下降",
+            "DP_ZJ": "升高",
+            "TJL": "升高"
+        },
+        "phenomena": [
+            "推进速度下降",
+            "刀盘转矩升高",
+            "总推进力升高"
+        ],
+        "uncertain_items": [],
+        "raw_output": {
+            "sensor_states": {
+                "TJSD": "下降",
+                "TJL": "升高",
+                "DP_ZJ": "升高",
+                "DP_SD": "未提及",
+                "KWC_PRS": "未提及",
+                "PJGL_FLOW": "未提及",
+                "ZJL_LJ": "未提及",
+                "HBW_YZ_PRS": "未提及"
+            },
+            "phenomena": [
+                "推进速度下降",
+                "刀盘转矩升高",
+                "总推进力升高"
+            ],
+            "uncertain_items": []
+        }
+    }
+
     report_result = fault_report_tool(
         question="推进速度下降，同时刀盘转矩升高，可能是什么原因？",
         rag_answer=mock_rag_answer,
         rule_check_result=rule_result,
         trend_result=trend_result,
+        sensor_states=mock_extraction_result["sensor_states"],
+        extraction_result=mock_extraction_result,
         output_filename="report_example.md"
     )
 
