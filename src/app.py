@@ -144,14 +144,43 @@ if run_button:
 # 结果展示函数
 # =========================
 
-def show_sensor_states(sensor_states: Dict[str, str]) -> None:
-    st.markdown("### 1. 识别到的传感器状态")
+def show_sensor_states(result: Dict[str, Any]) -> None:
+    st.markdown("### 1. 传感器状态抽取结果")
+
+    sensor_states = result.get("sensor_states", {})
+    extraction_result = result.get("extraction_result", {})
+
+    extraction_method = extraction_result.get("method", "unknown")
+
+    if extraction_method == "llm_json_extraction":
+        st.success("状态抽取方式：LLM JSON 语义抽取")
+    elif extraction_method == "rule_based_fallback":
+        st.warning("状态抽取方式：关键词规则回退")
+    else:
+        st.info(f"状态抽取方式：{extraction_method}")
 
     if not sensor_states:
         st.info("未从问题中识别到明确的传感器状态。")
-        return
+    else:
+        st.markdown("**识别到的传感器状态：**")
+        st.json(sensor_states)
 
-    st.json(sensor_states)
+    phenomena = extraction_result.get("phenomena", [])
+    if phenomena:
+        st.markdown("**LLM 抽取到的现象描述：**")
+        for item in phenomena:
+            st.markdown(f"- {item}")
+
+    uncertain_items = extraction_result.get("uncertain_items", [])
+    if uncertain_items:
+        st.markdown("**不确定项：**")
+        for item in uncertain_items:
+            st.markdown(f"- {item}")
+
+    raw_output = extraction_result.get("raw_output", {})
+    if raw_output:
+        with st.expander("查看 LLM 原始抽取 JSON", expanded=False):
+            st.json(raw_output)
 
 
 def show_rule_result(rule_result: Dict[str, Any]) -> None:
@@ -300,7 +329,7 @@ if "last_result" in st.session_state:
         show_rag_answer(result.get("rag_answer", ""))
 
     with tab2:
-        show_sensor_states(result.get("sensor_states", {}))
+        show_sensor_states(result)
         show_rule_result(result.get("rule_check_result", {}))
         show_trend_result(result.get("trend_result"))
 
