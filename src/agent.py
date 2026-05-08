@@ -8,6 +8,13 @@ from tools import (
     fault_report_tool
 )
 
+import json
+from typing import Dict, Any, List
+
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from rag_chain import rag_answer, get_llm
+
 
 def infer_sensor_states_from_question(question: str) -> Dict[str, str]:
     """
@@ -79,6 +86,171 @@ def infer_sensor_states_from_question(question: str) -> Dict[str, str]:
 
     return states
 
+def extract_sensor_states_with_llm(question: str) -> Dict[str, Any]:
+    """
+    使用大模型从用户故障描述中抽取传感器状态。
+
+    目标：
+    将自然语言问题转换为结构化 JSON，供规则工具使用。
+
+    如果用户没有明确提到某个传感器，则标记为“未提及”。
+    """
+
+    system_prompt = """
+你是工业设备故障诊断场景中的信息抽取助手。
+
+你的任务是：
+1. 从用户的故障描述中抽取传感器变量状态；
+2. 只输出严格 JSON；
+3. 不要输出解释、Markdown、代码块或多余文字；
+4. 如果用户没有提到某个变量，则填“未提及”；
+5. 不要编造用户没有描述的传感器状态。
+"""
+
+    user_prompt = f"""
+请从下面的故障描述中抽取传感器状态。
+
+【故障描述】
+{question}
+
+【支持的传感器变量】
+- TJSD：推进速度
+- TJL：总推进力
+- DP_ZJ：刀盘转矩
+- DP_SD：刀盘转速
+- KWC_PRS：开挖仓压力
+- PJGL_FLOW：排浆管路流量
+- ZJL_LJ：注浆累计量
+- HBW_YZ_PRS：主轴承油脂压力
+
+【状态取值要求】
+每个传感器状态只能从下面选：
+- 升高
+- 下降
+- 波动
+- 不足
+- 偏低
+- 偏高
+- 正常
+- 未提及
+
+【输出 JSON 格式】
+{{
+  "sensor_states": {{
+    "TJSD": "未提及",
+    "TJL": "未提及",
+    "DP_ZJ": "未提及",
+    "DP_SD": "未提及",
+    "KWC_PRS": "未提及",
+    "PJGL_FLOW": "未提及",
+    "ZJL_LJ": "未提及",
+    "HBW_YZ_PRS": "未提及"
+  }},
+  "phenomena": [],
+  "uncertain_items": []
+}}
+"""
+
+    llm = get_llm()
+
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt)
+    ])
+
+    content = response.content.strip()
+
+    # 防御：有些模型可能仍然包一层 ```json
+    if content.startswith("```"):
+        content = (
+            content
+            .replace("```json", "")
+            .replace("```JSON", "")
+            .replace("```", "")
+            .strip()
+        )
+
+    parsed = json.loads(content)
+
+    raw_states = parsed.get("sensor_states", {})
+
+    allowed_sensors = {
+        "TJSD",
+        "TJL",
+        "DP_ZJ",
+        "DP_SD",
+        "KWC_PRS",
+        "PJGL_FLOW",
+        "ZJL_LJ",
+        "HBW_YZ_PRS"
+    }
+
+    allowed_states = {
+        "升高",
+        "下降",
+        "波动",
+        "不足",
+        "偏低",
+        "偏高",
+        "正常",
+        "未提及"
+    }
+
+    cleaned_states = {}
+
+    for sensor, state in raw_states.items():
+        sensor = str(sensor).strip().upper()
+        state = str(state).strip()
+
+        if sensor not in allowed_sensors:
+            continue
+
+        if state not in allowed_states:
+            continue
+
+        if state == "未提及":
+            continue
+
+        cleaned_states[sensor] = state
+
+    return {
+        "success": True,
+        "method": "llm_json_extraction",
+        "sensor_states": cleaned_states,
+        "phenomena": parsed.get("phenomena", []),
+        "uncertain_items": parsed.get("uncertain_items", []),
+        "raw_output": parsed
+    }
+
+def extract_sensor_states(question: str, use_llm: bool = True) -> Dict[str, Any]:
+    """
+    传感器状态抽取统一入口。
+
+    优先使用 LLM JSON 抽取；
+    如果 LLM 调用失败、JSON 解析失败或结果为空，则回退到关键词规则。
+    """
+
+    if use_llm:
+        try:
+            llm_result = extract_sensor_states_with_llm(question)
+            sensor_states = llm_result.get("sensor_states", {})
+
+            if sensor_states:
+                return llm_result
+
+        except Exception as e:
+            print(f"LLM 状态抽取失败，回退到关键词规则。错误信息: {e}")
+
+    rule_based_states = infer_sensor_states_from_question(question)
+
+    return {
+        "success": True,
+        "method": "rule_based_fallback",
+        "sensor_states": rule_based_states,
+        "phenomena": [],
+        "uncertain_items": [],
+        "raw_output": {}
+    }
 
 def explain_related_sensors(sensor_states: Dict[str, str]) -> List[Dict[str, Any]]:
     """
@@ -112,9 +284,11 @@ def run_fault_diagnosis_agent(question: str, use_trend_analysis: bool = True) ->
     rag_result = rag_answer(question, top_k=4)
     rag_text = rag_result["answer"]
 
-    print("步骤 2：从问题中抽取传感器状态...")
-    sensor_states = infer_sensor_states_from_question(question)
+    print("步骤 2：使用 LLM JSON 抽取传感器状态...")
+    extraction_result = extract_sensor_states(question, use_llm=True)
+    sensor_states = extraction_result["sensor_states"]
 
+    print("状态抽取方式：", extraction_result["method"])
     print("识别到的传感器状态：", sensor_states)
 
     print("步骤 3：调用传感器解释工具...")
@@ -140,6 +314,7 @@ def run_fault_diagnosis_agent(question: str, use_trend_analysis: bool = True) ->
         "question": question,
         "rag_answer": rag_text,
         "sensor_states": sensor_states,
+        "extraction_result": extraction_result,
         "sensor_explanations": sensor_explanations,
         "rule_check_result": rule_check_result,
         "trend_result": trend_result,
@@ -161,6 +336,9 @@ def print_agent_result(result: Dict[str, Any]) -> None:
 
     print("\n【用户问题】")
     print(result["question"])
+
+    print("\n【状态抽取方式】")
+    print(result.get("extraction_result", {}).get("method", "unknown"))
 
     print("\n【识别到的传感器状态】")
     print(result["sensor_states"])
